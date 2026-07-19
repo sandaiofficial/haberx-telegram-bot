@@ -1,0 +1,50 @@
+name: HaberX Otomatik Haber Botu
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: haberx-news-bot
+  cancel-in-progress: false
+
+jobs:
+  check-news:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Projeyi indir
+        uses: actions/checkout@v4
+
+      - name: Node.js kur
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Paketleri kur
+        run: npm ci
+
+      - name: Yeni haberleri kontrol et
+        run: npm start
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
+          RUN_ONCE: "true"
+          MAX_POSTS_PER_CYCLE: "10"
+
+      - name: Haber kayıtlarını sakla
+        run: |
+          if git diff --quiet -- data/seen.json; then
+            exit 0
+          fi
+          git config user.name "HaberX Bot"
+          git config user.email "haberx-bot@users.noreply.github.com"
+          git add data/seen.json
+          git commit -m "Haber kayıtlarını güncelle [skip ci]"
+          git push
