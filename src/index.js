@@ -71,7 +71,38 @@ async function fetchSource(source) {
   const { text } = await request(source.home);
   return htmlItems(text, source.home, source);
 }
+async function fetchArticleImage(articleUrl) {
+  try {
+    const { text } = await request(articleUrl);
+    const $ = cheerio.load(text);
 
+    const candidates = [
+      $('meta[property="og:image:secure_url"]').attr("content"),
+      $('meta[property="og:image"]').attr("content"),
+      $('meta[name="twitter:image"]').attr("content"),
+      $('meta[property="twitter:image"]').attr("content"),
+      $('link[rel="image_src"]').attr("href")
+    ];
+
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+
+      try {
+        const imageUrl = new URL(candidate, articleUrl).href;
+
+        if (/^https?:\/\//i.test(imageUrl)) {
+          return imageUrl;
+        }
+      } catch {
+        // Geçersiz görsel adresini geç.
+      }
+    }
+  } catch (error) {
+    console.warn(`Haber görseli alınamadı: ${error.message}`);
+  }
+
+  return "";
+}
 async function telegram(method, payload) {
   const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: "POST",
@@ -182,11 +213,33 @@ if (!text) {
   continue;
 }
 
-await telegram("sendMessage", {
-  chat_id: channel,
-  text,
-  disable_web_page_preview: true
-});
+const imageUrl = await fetchArticleImage(item.link);
+
+if (imageUrl) {
+  try {
+    await telegram("sendPhoto", {
+      chat_id: channel,
+      photo: imageUrl,
+      caption: text
+    });
+  } catch (error) {
+    console.warn(
+      `Görsel gönderilemedi, metin gönderiliyor: ${error.message}`
+    );
+
+    await telegram("sendMessage", {
+      chat_id: channel,
+      text,
+      disable_web_page_preview: true
+    });
+  }
+} else {
+  await telegram("sendMessage", {
+    chat_id: channel,
+    text,
+    disable_web_page_preview: true
+  });
+}
     seen.add(item.link);
     await saveState({ initialized: true, seen: [...seen] });
     await new Promise(resolve => setTimeout(resolve, 1200));
