@@ -1,27 +1,3 @@
-export const sources = [
-  {
-    name: "Sözcü",
-    home: "https://www.sozcu.com.tr/",
-    feeds: [
-      "https://www.sozcu.com.tr/feeds-son-dakika",
-      "https://www.sozcu.com.tr/feeds-haberler",
-      "https://www.sozcu.com.tr/feeds-rss-category-gundem"
-    ],
-    include: /^https:\/\/(www\.)?sozcu\.com\.tr\/[a-z0-9-]+-p\d+$/i
-  },
-  {
-    name: "Habertürk",
-    home: "https://www.haberturk.com/",
-    feeds: ["https://www.haberturk.com/rss"],
-    include: /^https:\/\/(www\.)?haberturk\.com\/.+-\d+$/i
-  },
-  {
-    name: "Anadolu Ajansı",
-    home: "https://www.aa.com.tr/tr",
-    feeds: ["https://www.aa.com.tr/tr/rss/default?cat=guncel"],
-    include: /^https:\/\/(www\.)?aa\.com\.tr\/tr\/.+\/\d+$/i
-  },
-  {
     name: "DHA",
     home: "https://www.dha.com.tr/",
     feeds: [],
@@ -62,4 +38,3 @@ export const licensedOnlySources = [
     feeds: [],
     include: /^https:\/\/(www\.)?iha\.com\.tr\/(haber|gundem|politika|ekonomi|dunya|asayis|spor)\/.+/i
   }
-];
