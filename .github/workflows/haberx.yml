@@ -15,7 +15,7 @@ concurrency:
 jobs:
   check-news:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Projeyi indir
@@ -31,20 +31,22 @@ jobs:
         run: npm ci
 
       - name: Haberleri kontrol et
-  run: npm start
-  env:
-    TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-    TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
-    GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-    GEMINI_MODEL: gemini-3.5-flash-lite
-    MAX_POSTS_PER_CYCLE: "4"
-    RUN_ONCE: "true"
-    
+        run: npm start
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-3.5-flash-lite
+          MAX_POSTS_PER_CYCLE: "4"
+          RUN_ONCE: "true"
+
       - name: Haber kayıtlarını sakla
         run: |
           if git diff --quiet -- data/seen.json; then
+            echo "Yeni haber kaydı yok."
             exit 0
           fi
+
           git config user.name "HaberX Bot"
           git config user.email "haberx-bot@users.noreply.github.com"
           git add data/seen.json
