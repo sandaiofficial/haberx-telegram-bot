@@ -19,12 +19,12 @@ jobs:
 
     steps:
       - name: Projeyi indir
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Node.js kur
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Paketleri kur
