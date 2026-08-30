@@ -1,245 +1,432 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import * as cheerio from "cheerio";
-
 import { sources } from "./sources.js";
 
-const token = process.env.TELEGRAM_BOT_TOKEN;
-const channel = process.env.TELEGRAM_CHANNEL || "@HaberXOfficial";
-const geminiKey = process.env.GEMINI_API_KEY;
-
-const geminiModel =
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHANNEL = process.env.TELEGRAM_CHANNEL;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL =
   process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 
-const maxPosts = Math.min(
-  10,
-  Math.max(1, Number(process.env.MAX_POSTS_PER_CYCLE || 4))
-);
+const MAX_POSTS = Number(process.env.MAX_POSTS_PER_CYCLE || 2);
 
-const statePath = path.resolve("data/seen.json");
+const SEEN_FILE = path.resolve("data/seen.json");
 
-if (!token || token.includes("buraya")) {
-  throw new Error("TELEGRAM_BOT_TOKEN ayarlanmadı.");
+if (!TELEGRAM_BOT_TOKEN) {
+  throw new Error("TELEGRAM_BOT_TOKEN eksik.");
 }
 
-if (!geminiKey) {
-  throw new Error("GEMINI_API_KEY ayarlanmadı.");
+if (!TELEGRAM_CHANNEL) {
+  throw new Error("TELEGRAM_CHANNEL eksik.");
 }
 
-async function fetchHtml(url) {
+if (!GEMINI_API_KEY) {
+  throw new Error("GEMINI_API_KEY eksik.");
+}
+
+async function get(url) {
   const response = await fetch(url, {
-    redirect: "follow",
     headers: {
-      "user-agent":
-        "Mozilla/5.0 (compatible; HaberX/1.0; +https://t.me/HaberXOfficial)"
-    }
+      "User-Agent":
+        "Mozilla/5.0 (compatible; HaberX/1.0; +https://telegram.org)"
+    },
+    redirect: "follow"
   });
 
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);
   }
 
-  return {
-    html: await response.text(),
-    finalUrl: response.url || url
-  };
+  return response.text();
 }
 
-function absoluteUrl(value, baseUrl) {
-  if (!value) return "";
+function absoluteUrl(value, base) {
+  if (!value) return null;
 
   try {
-    return new URL(value, baseUrl).href;
+    return new URL(value, base).href;
   } catch {
-    return "";
+    return null;
   }
 }
 
-function cleanText(value) {
-  return String(value || "")
+function findMedia(html, pageUrl) {
+  const $ = cheerio.load(html);
+
+  const videos = [];
+  const images = [];
+
+  $("video, video source, source").each((_, element) => {
+    const src =
+      $(element).attr("src") ||
+      $(element).attr("data-src") ||
+      $(element).attr("data-video");
+
+    const url = absoluteUrl(src, pageUrl);
+
+    if (
+      url &&
+      /\.(mp4|webm|mov)(?:[?#].*)?$/i.test(url)
+    ) {
+      videos.push(url);
+    }
+  });
+
+  $(
+    "meta[property='og:video'], " +
+      "meta[property='og:video:url'], " +
+      "meta[property='og:video:secure_url']"
+  ).each((_, element) => {
+    const url = absoluteUrl(
+      $(element).attr("content"),
+      pageUrl
+    );
+
+    if (url) videos.push(url);
+  });
+
+  $(
+    "meta[property='og:image'], " +
+      "meta[name='twitter:image']"
+  ).each((_, element) => {
+    const url = absoluteUrl(
+      $(element).attr("content"),
+      pageUrl
+    );
+
+    if (url) images.push(url);
+  });
+
+  return {
+    video: [...new Set(videos)][0] || null,
+    image: [...new Set(images)][0] || null
+  };
+}
+
+function cleanText(text) {
+  return text
     .replace(/\s+/g, " ")
     .replace(/\u00a0/g, " ")
     .trim();
 }
 
-/*
- * Haber sayfasındaki video adresini bulur.
- *
- * Öncelik:
- * 1. og:video
- * 2. Twitter video
- * 3. video/source etiketleri
- * 4. JSON-LD içerisindeki video
- */
-function findVideo($, finalUrl) {
+async function readArticle(url) {
+  const html = await get(url);
+  const $ = cheerio.load(html);
+
+  const media = findMedia(html, url);
+
+  const title =
+    $("meta[property='og:title']").attr("content") ||
+    $("h1").first().text() ||
+    $("title").text();
+
+  let articleText =
+    $("article").text() ||
+    $("main").text() ||
+    $("body").text();
+
+  articleText = cleanText(articleText);
+
+  return {
+    title: cleanText(title),
+    text: articleText.slice(0, 14000),
+    video: media.video,
+    image: media.image
+  };
+}
+
+async function summarize(title, text) {
+  const prompt = `
+Sen HaberX için profesyonel bir haber editörüsün.
+
+Aşağıdaki haberi Türkçe olarak hazırla.
+
+Kurallar:
+- Yabancı haberleri Türkçeye çevir.
+- Haber başlığını yaz.
+- Ardından 2 veya 3 kısa cümlelik haber özeti yaz.
+- Tarafsız ol.
+- Haber metninde olmayan bilgi ekleme.
+- Link verme.
+- Kaynak adı yazma.
+- Hashtag kullanma.
+- Emoji kullanma.
+
+BAŞLIK:
+${title}
+
+HABER:
+${text}
+`;
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      GEMINI_MODEL
+    )}:generateContent?key=${encodeURIComponent(
+      GEMINI_API_KEY
+    )}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              {
+                text: prompt
+              }
+            ]
+          }
+        ]
+      })
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Gemini ${response.status}: ${await response.text()}`
+    );
+  }
+
+  const data = await response.json();
+
+  const result =
+    data.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text || "")
+      .join("")
+      .trim();
+
+  if (!result) {
+    throw new Error("Gemini boş cevap verdi.");
+  }
+
+  return result;
+}
+
+async function telegram(method, body) {
+  const response = await fetch(
+    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    }
+  );
+
+  const data = await response.json();
+
+  if (!data.ok) {
+    throw new Error(
+      `Telegram ${method}: ${data.description}`
+    );
+  }
+
+  return data;
+}
+
+async function sendToTelegram({
+  caption,
+  video,
+  image
+}) {
+  /*
+   * Öncelik:
+   * 1. Video
+   * 2. Fotoğraf
+   * 3. Sadece metin
+   */
+
+  if (video) {
+    try {
+      await telegram("sendVideo", {
+        chat_id: TELEGRAM_CHANNEL,
+        video,
+        caption,
+        supports_streaming: true
+      });
+
+      console.log("Telegram'a video gönderildi.");
+      return;
+    } catch (error) {
+      console.warn(
+        `Video gönderilemedi, fotoğrafa geçiliyor: ${error.message}`
+      );
+    }
+  }
+
+  if (image) {
+    try {
+      await telegram("sendPhoto", {
+        chat_id: TELEGRAM_CHANNEL,
+        photo: image,
+        caption
+      });
+
+      console.log("Telegram'a fotoğraf gönderildi.");
+      return;
+    } catch (error) {
+      console.warn(
+        `Fotoğraf gönderilemedi, metne geçiliyor: ${error.message}`
+      );
+    }
+  }
+
+  await telegram("sendMessage", {
+    chat_id: TELEGRAM_CHANNEL,
+    text: caption
+  });
+
+  console.log("Telegram'a metin gönderildi.");
+}
+
+async function loadSeen() {
+  try {
+    const data = await fs.readFile(SEEN_FILE, "utf8");
+    return JSON.parse(data);
+  } catch {
+    return {
+      initialized: false,
+      seenUrls: []
+    };
+  }
+}
+
+async function saveSeen(state) {
+  await fs.mkdir(path.dirname(SEEN_FILE), {
+    recursive: true
+  });
+
+  await fs.writeFile(
+    SEEN_FILE,
+    JSON.stringify(state, null, 2) + "\n"
+  );
+}
+
+function extractArticleLinks(html, source) {
+  const $ = cheerio.load(html);
+  const links = [];
+
+  $("a[href]").each((_, element) => {
+    const href = $(element).attr("href");
+    const url = absoluteUrl(href, source.home);
+
+    if (!url) return;
+
+    try {
+      if (
+        source.include &&
+        source.include.test(url)
+      ) {
+        links.push(url);
+      }
+    } catch {
+      // Geçersiz kaynak filtresi varsa atla.
+    }
+  });
+
+  return [...new Set(links)].slice(
+    0,
+    source.limit || 20
+  );
+}
+
+async function main() {
+  const state = await loadSeen();
+
   const candidates = [];
 
-  // Open Graph video
-  const metaSelectors = [
-    'meta[property="og:video:secure_url"]',
-    'meta[property="og:video:url"]',
-    'meta[property="og:video"]',
-    'meta[name="twitter:player:stream"]',
-    'meta[itemprop="contentUrl"]'
-  ];
-
-  for (const selector of metaSelectors) {
-    $(selector).each((_, element) => {
-      const value = $(element).attr("content");
-
-      if (value) {
-        candidates.push(value);
-      }
-    });
-  }
-
-  // Video etiketleri
-  $("video").each((_, element) => {
-    const attributes = [
-      "src",
-      "data-src",
-      "data-video",
-      "data-video-src",
-      "data-url",
-      "data-file",
-      "data-video-url"
-    ];
-
-    for (const attribute of attributes) {
-      const value = $(element).attr(attribute);
-
-      if (value) {
-        candidates.push(value);
-      }
-    }
-  });
-
-  // Video source etiketleri
-  $("video source, source").each((_, element) => {
-    const value =
-      $(element).attr("src") ||
-      $(element).attr("data-src") ||
-      $(element).attr("data-url");
-
-    if (value) {
-      candidates.push(value);
-    }
-  });
-
-  // iframe video kaynakları
-  $("iframe").each((_, element) => {
-    const src = $(element).attr("src");
-
-    if (
-      src &&
-      /(video|player|media|embed)/i.test(src)
-    ) {
-      candidates.push(src);
-    }
-  });
-
-  // Sayfadaki JSON-LD verilerini kontrol et
-  $('script[type="application/ld+json"]').each((_, element) => {
+  for (const source of sources) {
     try {
-      const raw = $(element).html();
+      const html = await get(source.home);
 
-      if (!raw) return;
+      const links = extractArticleLinks(
+        html,
+        source
+      );
 
-      const data = JSON.parse(raw);
+      console.log(
+        `${source.name}: ${links.length} aday bağlantı bulundu.`
+      );
 
-      function scan(value) {
-        if (!value) return;
-
-        if (Array.isArray(value)) {
-          for (const item of value) {
-            scan(item);
-          }
-
-          return;
-        }
-
-        if (typeof value !== "object") return;
-
-        const possibleVideoFields = [
-          "contentUrl",
-          "embedUrl",
-          "videoUrl",
-          "url"
-        ];
-
-        for (const field of possibleVideoFields) {
-          const valueToAdd = value[field];
-
-          if (
-            typeof valueToAdd === "string" &&
-            (
-              /\.(mp4|webm|mov)(?:[?#].*)?$/i.test(valueToAdd) ||
-              /(video|media|player)/i.test(valueToAdd)
-            )
-          ) {
-            candidates.push(valueToAdd);
-          }
-        }
-
-        for (const key of Object.keys(value)) {
-          if (
-            key === "video" ||
-            key === "videoObject" ||
-            key === "@graph"
-          ) {
-            scan(value[key]);
-          }
+      for (const url of links) {
+        if (!state.seenUrls.includes(url)) {
+          candidates.push({
+            url,
+            source
+          });
         }
       }
-
-      scan(data);
-    } catch {
-      // Geçersiz JSON-LD varsa devam edilir.
-    }
-  });
-
-  // Sayfanın HTML'i içinde açık MP4/WebM bağlantıları ara
-  const html = $.html();
-
-  const directVideoRegex =
-    /https?:\/\/[^"'\\\s<>]+?\.(?:mp4|webm|mov)(?:\?[^"'\\\s<>]*)?/gi;
-
-  const directVideos =
-    html.match(directVideoRegex) || [];
-
-  candidates.push(...directVideos);
-
-  // Tekrarlanan adresleri kaldır
-  const uniqueCandidates = [
-    ...new Set(candidates)
-  ];
-
-  for (const candidate of uniqueCandidates) {
-    const resolved = absoluteUrl(
-      candidate,
-      finalUrl
-    );
-
-    if (!resolved) continue;
-
-    // MP4 / WebM / MOV
-    if (
-      /\.(mp4|webm|mov)(?:[?#].*)?$/i.test(
-        resolved
-      )
-    ) {
-      return resolved;
-    }
-
-    // Bazı siteler uzantısız video URL'si kullanıyor
-    if (
-      /\/(video|videos|media)\/[^?#]+/i.test(
-        resolved
-      )
-    ) {
-      return resolved;
+    } catch (error) {
+      console.warn(
+        `${source.name} taranamadı: ${error.message}`
+      );
     }
   }
 
-  return "";
+  let published = 0;
+
+  for (const item of candidates) {
+    if (published >= MAX_POSTS) break;
+
+    try {
+      const article = await readArticle(item.url);
+
+      if (
+        !article.title ||
+        article.text.length < 100
+      ) {
+        continue;
+      }
+
+      console.log(
+        `İşleniyor: ${article.title}`
+      );
+
+      const caption = await summarize(
+        article.title,
+        article.text
+      );
+
+      await sendToTelegram({
+        caption,
+        video: article.video,
+        image: article.image
+      });
+
+      state.seenUrls.push(item.url);
+
+      published++;
+
+      console.log(
+        `Paylaşım tamamlandı: ${article.title}`
+      );
+    } catch (error) {
+      console.warn(
+        `${item.source.name} haber işlenemedi: ${error.message}`
+      );
+    }
+  }
+
+  state.seenUrls = [
+    ...new Set(state.seenUrls)
+  ].slice(-5000);
+
+  state.initialized = true;
+
+  await saveSeen(state);
+
+  console.log(
+    `${new Date().toISOString()} — ${published} yeni haber işlendi.`
+  );
 }
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
